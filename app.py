@@ -3,14 +3,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 import sys
-sys.path.insert(0, "/content/neurascore")
+sys.path.insert(0, "/app")
 
-from data_models import ContentInput
-from scoring_engine import score_content
-from comparison_engine import compare_versions
+from data_models import ContentInput, ContentType
+from scoring_engine import score
+from tribe_model import predict
+from comparison_engine import compare
 from meta_scorer import run_meta_audit
+from groq_analyzer import run_quick_critique, run_deep_analysis
 
-app = FastAPI(title="NeuraScore API", version="2.0")
+app = FastAPI(title="NeuraScore API", version="2.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -32,14 +34,28 @@ class AuditRequest(BaseModel):
     text: str
     content_type: Optional[str] = "ad_copy"
 
+class QuickCritiqueRequest(BaseModel):
+    text: str
+    content_type: Optional[str] = "ad_copy"
+
+class DeepAnalysisRequest(BaseModel):
+    text: str
+    content_type: Optional[str] = "ad_copy"
+
+
 @app.get("/")
 def health():
-    return {"status": "NeuraScore API v2.0 is live", "endpoints": ["/score", "/compare", "/meta-audit"]}
+    return {
+        "status": "NeuraScore API v2.1 is live",
+        "endpoints": ["/score", "/compare", "/meta-audit", "/quick-critique", "/deep-analysis"]
+    }
+
 
 @app.post("/score")
-def score(req: ScoreRequest):
-    content = ContentInput(text=req.text, content_type=req.content_type)
-    result = score_content(content)
+def score_endpoint(req: ScoreRequest):
+    content = ContentInput(text=req.text, content_type=ContentType.TEXT)
+    brain_response = predict(content)
+    result = score(brain_response)
     audit = run_meta_audit(content)
     return {
         "brain_scores": {
@@ -69,22 +85,29 @@ def score(req: ScoreRequest):
         }
     }
 
+
 @app.post("/compare")
-def compare(req: CompareRequest):
-    content_a = ContentInput(text=req.text_a, content_type=req.content_type)
-    content_b = ContentInput(text=req.text_b, content_type=req.content_type)
-    result_a = score_content(content_a)
-    result_b = score_content(content_b)
-    comparison = compare_versions(result_a, result_b)
+def compare_endpoint(req: CompareRequest):
+    content_a = ContentInput(text=req.text_a, content_type=ContentType.TEXT, label="Version A")
+    content_b = ContentInput(text=req.text_b, content_type=ContentType.TEXT, label="Version B")
+    result_a = score(predict(content_a))
+    result_b = score(predict(content_b))
+    comparison = compare(result_a, result_b)
     audit_a = run_meta_audit(content_a)
     audit_b = run_meta_audit(content_b)
     return {
         "comparison": {
-            "winner": comparison.winner,
-            "verdict": comparison.verdict,
-            "score_a": comparison.overall_score_a,
-            "score_b": comparison.overall_score_b,
-            "metric_winners": comparison.metric_winners,
+            "overall_winner": comparison.overall_winner,
+            "overall_delta": comparison.overall_delta,
+            "overall_summary": comparison.overall_summary,
+            "score_a": result_a.overall_score,
+            "score_b": result_b.overall_score,
+            "attention_winner": comparison.attention_winner,
+            "emotion_winner": comparison.emotion_winner,
+            "memory_winner": comparison.memory_winner,
+            "visual_engagement_winner": comparison.visual_engagement_winner,
+            "language_clarity_winner": comparison.language_clarity_winner,
+            "desire_winner": comparison.desire_winner,
         },
         "meta_audit_a": {
             "overall_score": audit_a.overall_score,
@@ -98,9 +121,10 @@ def compare(req: CompareRequest):
         }
     }
 
+
 @app.post("/meta-audit")
-def meta_audit(req: AuditRequest):
-    content = ContentInput(text=req.text, content_type=req.content_type)
+def meta_audit_endpoint(req: AuditRequest):
+    content = ContentInput(text=req.text, content_type=ContentType.TEXT)
     audit = run_meta_audit(content)
     return {
         "overall_score": audit.overall_score,
@@ -118,3 +142,17 @@ def meta_audit(req: AuditRequest):
             } for c in audit.checks
         ]
     }
+
+
+@app.post("/quick-critique")
+def quick_critique_endpoint(req: QuickCritiqueRequest):
+    content = ContentInput(text=req.text, content_type=ContentType.TEXT)
+    result = run_quick_critique(content)
+    return result
+
+
+@app.post("/deep-analysis")
+def deep_analysis_endpoint(req: DeepAnalysisRequest):
+    content = ContentInput(text=req.text, content_type=ContentType.TEXT)
+    result = run_deep_analysis(content)
+    return result
