@@ -1,8 +1,12 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 import base64
+
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from data_models import ContentInput, ContentType
 from scoring_engine import score
@@ -13,7 +17,16 @@ from groq_analyzer import run_quick_critique, run_deep_analysis
 from image_analyzer import analyze_image, analyze_image_from_url
 from video_analyzer import analyze_youtube_video, analyze_video_file
 
-app = FastAPI(title="NeuraScore API", version="2.2")
+# ─────────────────────────────────────────────
+# RATE LIMITER SETUP
+# ─────────────────────────────────────────────
+
+limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
+
+app = FastAPI(title="NeuraScore API", version="2.3")
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
@@ -42,33 +55,32 @@ class MetaAuditRequest(BaseModel):
     label: Optional[str] = "Ad Copy"
 
 class ImageRequest(BaseModel):
-    # Either base64 image data OR a public URL — not both
-    image_base64: Optional[str] = None   # base64-encoded image bytes
-    image_url: Optional[str] = None      # public image URL
+    image_base64: Optional[str] = None
+    image_url: Optional[str] = None
     mime_type: Optional[str] = "image/jpeg"
     label: Optional[str] = "Ad Image"
 
 class VideoRequest(BaseModel):
-    # Either a YouTube URL OR base64 video bytes — not both
-    youtube_url: Optional[str] = None    # YouTube video URL
-    video_base64: Optional[str] = None   # base64-encoded video bytes for uploads
+    youtube_url: Optional[str] = None
+    video_base64: Optional[str] = None
     mime_type: Optional[str] = "video/mp4"
     label: Optional[str] = "Ad Video"
 
 # ─────────────────────────────────────────────
-# EXISTING ENDPOINTS — UNCHANGED
+# ENDPOINTS
 # ─────────────────────────────────────────────
 
 @app.get("/")
 def health_check():
     return {
-        "status": "NeuraScore API v2.2 live",
-        "endpoints": ["/score", "/compare", "/meta-audit", "/quick-critique", 
+        "status": "NeuraScore API v2.3 live",
+        "endpoints": ["/score", "/compare", "/meta-audit", "/quick-critique",
                       "/deep-analysis", "/score-image", "/score-video"]
     }
 
 @app.post("/score")
-def score_content(req: TextRequest):
+@limiter.limit("30/minute")
+def score_content(req: TextRequest, request: Request):
     try:
         content = ContentInput(
             text=req.text,
@@ -87,7 +99,8 @@ def score_content(req: TextRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/compare")
-def compare_content(req: CompareRequest):
+@limiter.limit("20/minute")
+def compare_content(req: CompareRequest, request: Request):
     try:
         content_a = ContentInput(text=req.text_a, content_type=ContentType.TEXT, label=req.label_a)
         content_b = ContentInput(text=req.text_b, content_type=ContentType.TEXT, label=req.label_b)
@@ -107,7 +120,8 @@ def compare_content(req: CompareRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/meta-audit")
-def meta_audit(req: MetaAuditRequest):
+@limiter.limit("30/minute")
+def meta_audit(req: MetaAuditRequest, request: Request):
     try:
         content = ContentInput(text=req.text, content_type=ContentType.TEXT, label=req.label)
         audit = run_meta_audit(content)
@@ -116,7 +130,8 @@ def meta_audit(req: MetaAuditRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/quick-critique")
-def quick_critique(req: TextRequest):
+@limiter.limit("20/minute")
+def quick_critique(req: TextRequest, request: Request):
     try:
         content = ContentInput(text=req.text, content_type=ContentType.TEXT, label=req.label)
         critique = run_quick_critique(content)
@@ -125,7 +140,8 @@ def quick_critique(req: TextRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/deep-analysis")
-def deep_analysis(req: TextRequest):
+@limiter.limit("10/minute")
+def deep_analysis(req: TextRequest, request: Request):
     try:
         content = ContentInput(text=req.text, content_type=ContentType.TEXT, label=req.label)
         analysis = run_deep_analysis(content)
@@ -133,21 +149,11 @@ def deep_analysis(req: TextRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# ─────────────────────────────────────────────
-# NEW ENDPOINT: IMAGE SCORING
-# ─────────────────────────────────────────────
-
 @app.post("/score-image")
-def score_image(req: ImageRequest):
-    """
-    Accepts either a base64-encoded image or a public image URL.
-    Gemini Flash analyses the visual content, then the existing
-    brain scoring + Meta audit pipeline runs on that analysis.
-    Returns identical response shape to /score.
-    """
+@limiter.limit("20/minute")
+def score_image(req: ImageRequest, request: Request):
     try:
         if req.image_base64:
-            # Decode base64 bytes sent from frontend
             image_bytes = base64.b64decode(req.image_base64)
             content_input, gemini_analysis = analyze_image(
                 image_bytes, req.mime_type, req.label
@@ -161,39 +167,24 @@ def score_image(req: ImageRequest):
                 status_code=400,
                 detail="Provide either image_base64 or image_url"
             )
-
-        # Run through existing pipeline — zero changes needed downstream
         brain_response = predict(content_input)
         scored = score(brain_response)
         audit = run_meta_audit(content_input)
-
         return {
             "label": req.label,
             "content_type": "image",
-            # Include Gemini's raw analysis so frontend can show it
-            # This tells the user WHAT Gemini saw — transparent and useful
             "gemini_analysis": gemini_analysis,
             "brain_scores": scored.__dict__,
             "meta_audit": audit.__dict__
         }
-
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# ─────────────────────────────────────────────
-# NEW ENDPOINT: VIDEO SCORING
-# ─────────────────────────────────────────────
-
 @app.post("/score-video")
-def score_video(req: VideoRequest):
-    """
-    Accepts either a YouTube URL or a base64-encoded video file.
-    Gemini Flash analyses visuals + audio in one call (no separate
-    transcription service needed). Same pipeline as /score downstream.
-    Returns identical response shape to /score.
-    """
+@limiter.limit("10/minute")
+def score_video(req: VideoRequest, request: Request):
     try:
         if req.youtube_url:
             content_input, gemini_analysis = analyze_youtube_video(
@@ -209,22 +200,16 @@ def score_video(req: VideoRequest):
                 status_code=400,
                 detail="Provide either youtube_url or video_base64"
             )
-
-        # Run through existing pipeline — zero changes needed downstream
         brain_response = predict(content_input)
         scored = score(brain_response)
         audit = run_meta_audit(content_input)
-
         return {
             "label": req.label,
             "content_type": "video",
-            # Gemini's full analysis — hook timing, transcript, pacing etc.
-            # Frontend should display this as "What our AI saw" section
             "gemini_analysis": gemini_analysis,
             "brain_scores": scored.__dict__,
             "meta_audit": audit.__dict__
         }
-
     except HTTPException:
         raise
     except Exception as e:
