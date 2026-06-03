@@ -4,3 +4,4 @@ groq
 google-generativeai
 httpx
 slowapi
+python-multipart
