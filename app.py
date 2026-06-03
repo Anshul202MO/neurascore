@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
@@ -73,9 +73,9 @@ class VideoRequest(BaseModel):
 @app.get("/")
 def health_check():
     return {
-        "status": "NeuraScore API v2.3 live",
-        "endpoints": ["/score", "/compare", "/meta-audit", "/quick-critique",
-                      "/deep-analysis", "/score-image", "/score-video"]
+        "status": "Neura API v2.3 live",
+        "endpoints": ["/", "/compare", "/meta-audit", "/quick-critique",
+                      "/deep-analysis", "/-image", "/score-video"]
     }
 
 @app.post("/score")
@@ -184,27 +184,18 @@ def score_image(req: ImageRequest, request: Request):
 
 @app.post("/score-video")
 @limiter.limit("10/minute")
-def score_video(req: VideoRequest, request: Request):
+async def score_video(request: Request, file: UploadFile = File(...), label: str = "Video"):
     try:
-        if req.youtube_url:
-            content_input, gemini_analysis = analyze_youtube_video(
-                req.youtube_url, req.label
-            )
-        elif req.video_base64:
-            video_bytes = base64.b64decode(req.video_base64)
-            content_input, gemini_analysis = analyze_video_file(
-                video_bytes, req.mime_type, req.label
-            )
-        else:
-            raise HTTPException(
-                status_code=400,
-                detail="Provide either youtube_url or video_base64"
-            )
+        video_bytes = await file.read()
+        mime_type = file.content_type or "video/mp4"
+        content_input, gemini_analysis = analyze_video_file(
+            video_bytes, mime_type, label
+        )
         brain_response = predict(content_input)
         scored = score(brain_response)
         audit = run_meta_audit(content_input)
         return {
-            "label": req.label,
+            "label": label,
             "content_type": "video",
             "gemini_analysis": gemini_analysis,
             "brain_scores": scored.__dict__,
