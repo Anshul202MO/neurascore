@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
@@ -23,7 +23,7 @@ from video_analyzer import analyze_youtube_video, analyze_video_file
 
 limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
 
-app = FastAPI(title="NeuraScore API", version="2.3")
+app = FastAPI(title="NeuraScore API", version="2.4")
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
@@ -43,28 +43,33 @@ app.add_middleware(
 class TextRequest(BaseModel):
     text: str
     label: Optional[str] = "Ad Copy"
+    ad_objective: Optional[str] = None
 
 class CompareRequest(BaseModel):
     text_a: str
     text_b: str
     label_a: Optional[str] = "Version A"
     label_b: Optional[str] = "Version B"
+    ad_objective: Optional[str] = None
 
 class MetaAuditRequest(BaseModel):
     text: str
     label: Optional[str] = "Ad Copy"
+    ad_objective: Optional[str] = None
 
 class ImageRequest(BaseModel):
     image_base64: Optional[str] = None
     image_url: Optional[str] = None
     mime_type: Optional[str] = "image/jpeg"
     label: Optional[str] = "Ad Image"
+    ad_objective: Optional[str] = None
 
 class VideoRequest(BaseModel):
     youtube_url: Optional[str] = None
     video_base64: Optional[str] = None
     mime_type: Optional[str] = "video/mp4"
     label: Optional[str] = "Ad Video"
+    ad_objective: Optional[str] = None
 
 # ─────────────────────────────────────────────
 # ENDPOINTS
@@ -73,9 +78,9 @@ class VideoRequest(BaseModel):
 @app.get("/")
 def health_check():
     return {
-        "status": "Neura API v2.3 live",
-        "endpoints": ["/", "/compare", "/meta-audit", "/quick-critique",
-                      "/deep-analysis", "/-image", "/score-video"]
+        "status": "NeuraScore API v2.4 live",
+        "endpoints": ["/score", "/compare", "/meta-audit", "/quick-critique",
+                      "/deep-analysis", "/score-image", "/score-video"]
     }
 
 @app.post("/score")
@@ -89,7 +94,7 @@ def score_content(req: TextRequest, request: Request):
         )
         brain_response = predict(content)
         scored = score(brain_response)
-        audit = run_meta_audit(content)
+        audit = run_meta_audit(content, ad_objective=req.ad_objective)
         return {
             "label": req.label,
             "brain_scores": scored.__dict__,
@@ -108,8 +113,8 @@ def compare_content(req: CompareRequest, request: Request):
         brain_b = predict(content_b)
         scored_a = score(brain_a)
         scored_b = score(brain_b)
-        audit_a = run_meta_audit(content_a)
-        audit_b = run_meta_audit(content_b)
+        audit_a = run_meta_audit(content_a, ad_objective=req.ad_objective)
+        audit_b = run_meta_audit(content_b, ad_objective=req.ad_objective)
         comparison = compare(scored_a, scored_b)
         return {
             "version_a": {"label": req.label_a, "brain_scores": scored_a.__dict__, "meta_audit": audit_a.__dict__},
@@ -124,7 +129,7 @@ def compare_content(req: CompareRequest, request: Request):
 def meta_audit(req: MetaAuditRequest, request: Request):
     try:
         content = ContentInput(text=req.text, content_type=ContentType.TEXT, label=req.label)
-        audit = run_meta_audit(content)
+        audit = run_meta_audit(content, ad_objective=req.ad_objective)
         return {"label": req.label, "meta_audit": audit.__dict__}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -169,7 +174,7 @@ def score_image(req: ImageRequest, request: Request):
             )
         brain_response = predict(content_input)
         scored = score(brain_response)
-        audit = run_meta_audit(content_input)
+        audit = run_meta_audit(content_input, ad_objective=req.ad_objective)
         return {
             "label": req.label,
             "content_type": "image",
@@ -184,7 +189,12 @@ def score_image(req: ImageRequest, request: Request):
 
 @app.post("/score-video")
 @limiter.limit("10/minute")
-async def score_video(request: Request, file: UploadFile = File(...), label: str = "Video"):
+async def score_video(
+    request: Request,
+    file: UploadFile = File(...),
+    label: str = "Video",
+    ad_objective: Optional[str] = Form(None)
+):
     try:
         video_bytes = await file.read()
         mime_type = file.content_type or "video/mp4"
@@ -193,7 +203,7 @@ async def score_video(request: Request, file: UploadFile = File(...), label: str
         )
         brain_response = predict(content_input)
         scored = score(brain_response)
-        audit = run_meta_audit(content_input)
+        audit = run_meta_audit(content_input, ad_objective=ad_objective)
         return {
             "label": label,
             "content_type": "video",
