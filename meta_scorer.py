@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List, Dict
+from typing import List, Dict, Optional
 from data_models import ContentInput
 
 @dataclass
@@ -35,7 +35,30 @@ def _find_first_match(text: str, word_list: list) -> str:
     return ""
 
 
-def run_meta_audit(content: ContentInput) -> MetaAuditResult:
+# ── AD OBJECTIVE MAP ───────────────────────────────────────────────
+# Maps each of the 13 Ad Objective options to the audit categories
+# that matter most for that format. Those categories get weighted
+# 1.5x when computing the overall score, so the audit reflects what
+# actually matters for the format being tested.
+
+OBJECTIVE_MAP: Dict[str, List[str]] = {
+    "Bumper Ad (6-second awareness)": ["Bumper Ads"],
+    "Brand Love / Storytelling": ["YouTube ABCD", "Branded Content"],
+    "Performance / Direct Response": ["Performance Creative", "Search Ads"],
+    "Product Launch": ["YouTube ABCD", "Performance Creative"],
+    "Consideration / Mid-Funnel": ["Performance Creative", "Search Ads"],
+    "Social / Influencer Content": ["Branded Content", "Interactivity"],
+    "YouTube Skippable (15-30s)": ["YouTube ABCD"],
+    "Display / Static Banner": ["Search Ads"],
+    "Search Ad (Google)": ["Search Ads"],
+    "OOH / Billboard": ["Bumper Ads"],
+    "Email Campaign": ["Search Ads", "Performance Creative"],
+    "Retail / Shopper": ["Performance Creative", "Search Ads"],
+    "AR / Interactive Ad": ["Interactivity"],
+}
+
+
+def run_meta_audit(content: ContentInput, ad_objective: Optional[str] = None) -> MetaAuditResult:
     raw_text = (content.text or "")
     text = raw_text.lower()
     words = text.split()
@@ -392,9 +415,20 @@ def run_meta_audit(content: ContentInput) -> MetaAuditResult:
         )
     ))
 
-    # ── SCORING ──────────────────────────────────────────────────────
+    # ── SCORING (objective-weighted) ──────────────────────────────────
 
-    overall = sum(c.score for c in checks) / len(checks)
+    priority_categories = OBJECTIVE_MAP.get(ad_objective, []) if ad_objective else []
+
+    if priority_categories:
+        weighted_total = 0.0
+        weight_sum = 0.0
+        for c in checks:
+            weight = 1.5 if c.category in priority_categories else 1.0
+            weighted_total += c.score * weight
+            weight_sum += weight
+        overall = weighted_total / weight_sum
+    else:
+        overall = sum(c.score for c in checks) / len(checks)
 
     categories = {}
     for c in checks:
@@ -423,6 +457,12 @@ def run_meta_audit(content: ContentInput) -> MetaAuditResult:
             f"with {fails} outright fail(s). "
             f"Priority fixes: hook strength, CTA clarity, and benefit-led framing."
         )
+
+    if ad_objective:
+        if priority_categories:
+            verdict = f"Analysed for {ad_objective}. " + verdict
+        else:
+            verdict = f"Analysed for {ad_objective} (general checks applied). " + verdict
 
     return MetaAuditResult(
         overall_score=round(overall, 1),
