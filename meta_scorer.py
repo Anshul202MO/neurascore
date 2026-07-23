@@ -38,8 +38,8 @@ def _find_first_match(text: str, word_list: list) -> str:
 # ── AD OBJECTIVE MAP ───────────────────────────────────────────────
 # Maps each of the 13 Ad Objective options to the audit categories
 # that matter most for that format. Those categories get weighted
-# 1.5x when computing the overall score, so the audit reflects what
-# actually matters for the format being tested.
+# 2.5x when computing the overall score, and their individual checks
+# are visibly tagged as priority checks in the feedback.
 
 OBJECTIVE_MAP: Dict[str, List[str]] = {
     "Bumper Ad (6-second awareness)": ["Bumper Ads"],
@@ -56,6 +56,9 @@ OBJECTIVE_MAP: Dict[str, List[str]] = {
     "Retail / Shopper": ["Performance Creative", "Search Ads"],
     "AR / Interactive Ad": ["Interactivity"],
 }
+
+PRIORITY_WEIGHT = 2.5
+PRIORITY_TAG = "🎯 Priority for this objective — "
 
 
 def run_meta_audit(content: ContentInput, ad_objective: Optional[str] = None) -> MetaAuditResult:
@@ -415,15 +418,22 @@ def run_meta_audit(content: ContentInput, ad_objective: Optional[str] = None) ->
         )
     ))
 
-    # ── SCORING (objective-weighted) ──────────────────────────────────
+    # ── APPLY OBJECTIVE PRIORITY TAGS ─────────────────────────────────
 
     priority_categories = OBJECTIVE_MAP.get(ad_objective, []) if ad_objective else []
+
+    if priority_categories:
+        for c in checks:
+            if c.category in priority_categories:
+                c.feedback = PRIORITY_TAG + c.feedback
+
+    # ── SCORING (objective-weighted) ──────────────────────────────────
 
     if priority_categories:
         weighted_total = 0.0
         weight_sum = 0.0
         for c in checks:
-            weight = 1.5 if c.category in priority_categories else 1.0
+            weight = PRIORITY_WEIGHT if c.category in priority_categories else 1.0
             weighted_total += c.score * weight
             weight_sum += weight
         overall = weighted_total / weight_sum
@@ -460,9 +470,17 @@ def run_meta_audit(content: ContentInput, ad_objective: Optional[str] = None) ->
 
     if ad_objective:
         if priority_categories:
-            verdict = f"Analysed for {ad_objective}. " + verdict
+            priority_summary = "; ".join(
+                f"{cat} scored {category_scores.get(cat, 0)}" for cat in priority_categories
+            )
+            verdict = (
+                f"Analysed for {ad_objective}. For this objective, {', '.join(priority_categories)} "
+                f"{'matters' if len(priority_categories) == 1 else 'matter'} most and "
+                f"{'is' if len(priority_categories) == 1 else 'are'} weighted more heavily below "
+                f"({priority_summary}). " + verdict
+            )
         else:
-            verdict = f"Analysed for {ad_objective} (general checks applied). " + verdict
+            verdict = f"Analysed for {ad_objective} (general checks applied, no specific weighting available). " + verdict
 
     return MetaAuditResult(
         overall_score=round(overall, 1),
