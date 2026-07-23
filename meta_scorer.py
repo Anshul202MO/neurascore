@@ -76,7 +76,8 @@ def run_meta_audit(content: ContentInput, ad_objective: Optional[str] = None) ->
     hook_words = ["introducing", "discover", "imagine", "what if", "now", "new",
                   "you", "your", "free", "save", "why", "how", "stop", "warning",
                   "finally", "announcing", "never", "always", "the truth"]
-    matched_hook = _find_first_match(text, hook_words)
+    opening_snippet = " ".join(words[:10])
+    matched_hook = _find_first_match(opening_snippet, hook_words)
     has_hook = bool(matched_hook)
     checks.append(AuditCheck(
         id="yt_attract", category="YouTube ABCD",
@@ -176,7 +177,7 @@ def run_meta_audit(content: ContentInput, ad_objective: Optional[str] = None) ->
     striking_words = ["only", "exclusive", "limited", "just", "introducing",
                       "new", "never", "always", "every", "first", "last",
                       "biggest", "smallest", "fastest", "proven"]
-    matched_striking = _find_first_match(text, striking_words)
+    matched_striking = _find_first_match(opening_snippet, striking_words)
     has_striking = bool(matched_striking)
     checks.append(AuditCheck(
         id="bump_establish", category="Bumper Ads",
